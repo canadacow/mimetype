@@ -1,6 +1,9 @@
 package magic
 
 import (
+	"bytes"
+	"encoding/csv"
+	"errors"
 	"io"
 	"reflect"
 	"testing"
@@ -168,8 +171,13 @@ func TestSv(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := sv([]byte(tt.input), tt.delimiter, tt.limit); got != tt.want {
-				t.Errorf("Csv() = %v, want %v", got, tt.want)
+			got := sv([]byte(tt.input), tt.delimiter, tt.limit)
+			stdlib := svStdlib([]byte(tt.input), rune(tt.delimiter), tt.limit)
+			if got != tt.want {
+				t.Errorf("sv(): got %v, want %v", got, tt.want)
+			}
+			if got != stdlib {
+				t.Errorf("sv(): got %v, sdtlib %v", got, stdlib)
 			}
 		})
 	}
@@ -214,4 +222,56 @@ func Test_prepSvReader(t *testing.T) {
 			}
 		})
 	}
+}
+func FuzzSv(f *testing.F) {
+	samples := []string{
+		"a,b,c\n1,2,3",     // simple csv
+		"a,b,c\r\n1,2,3",   // with \r\n line ending
+		"a,b,c\n#c\n1,2,3", // with comment
+		"æ,ø,å\n1,2,3",     // utf-8
+
+		`"a","b","c"
+"1","2","3"`, // quotes
+
+		`a,b,c
+#"c"
+1,2,3`, // quoted comment
+	}
+
+	for _, s := range samples {
+		f.Add([]byte(s))
+	}
+
+	f.Fuzz(func(t *testing.T, d []byte) {
+		prev := svStdlib(d, ',', 0)
+		curr := sv(d, ',', 0)
+		if prev != curr {
+			t.Errorf("curr detector does not match prev:\ncurr: %t, prev: %t, input: %s",
+				curr, prev, string(d))
+		}
+	})
+}
+
+// svStdlib was the previous function used for CSV/TSV detection. It is currently
+// used to test the correctness of CSV detection.
+func svStdlib(in []byte, comma rune, limit uint32) bool {
+	r := csv.NewReader(bytes.NewReader(dropLastLine(in, limit)))
+	r.Comma = comma
+	r.ReuseRecord = true
+	r.LazyQuotes = true
+	r.Comment = '#'
+
+	lines := 0
+	for {
+		_, err := r.Read()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return false
+		}
+		lines++
+	}
+
+	return r.FieldsPerRecord > 1 && lines > 1
 }
